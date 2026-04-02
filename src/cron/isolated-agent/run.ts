@@ -89,6 +89,8 @@ export type RunCronAgentTurnResult = {
 } & CronRunOutcome &
   CronRunTelemetry;
 
+const CRON_NO_EDIT_GATE_MARKER = "CRON WRITE SAFETY GATE (MANDATORY)";
+
 export async function runCronIsolatedAgentTurn(params: {
   cfg: OpenClawConfig;
   deps: CliDeps;
@@ -331,6 +333,7 @@ export async function runCronIsolatedAgentTurn(params: {
   });
 
   const agentPayload = params.job.payload.kind === "agentTurn" ? params.job.payload : null;
+  const disableEditTool = agentPayload?.message?.includes(CRON_NO_EDIT_GATE_MARKER) === true;
   const deliveryPlan = resolveCronDeliveryPlan(params.job);
   const deliveryRequested = deliveryPlan.requested;
 
@@ -531,6 +534,7 @@ export async function runCronIsolatedAgentTurn(params: {
           // be blocked by a target it cannot satisfy (#27898).
           requireExplicitMessageTarget: deliveryRequested && resolvedDelivery.ok,
           disableMessageTool: deliveryRequested || deliveryPlan.mode === "none",
+          disableEditTool,
           abortSignal,
           bootstrapPromptWarningSignaturesSeen,
           bootstrapPromptWarningSignature,

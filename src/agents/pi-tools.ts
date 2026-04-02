@@ -238,6 +238,8 @@ export function createOpenClawCodingTools(options?: {
   requireExplicitMessageTarget?: boolean;
   /** If true, omit the message tool from the tool list. */
   disableMessageTool?: boolean;
+  /** If true, omit the edit tool from the tool list. */
+  disableEditTool?: boolean;
   /** Whether the sender is an owner (required for owner-only tools). */
   senderIsOwner?: boolean;
 }): AnyAgentTool[] {
@@ -367,6 +369,9 @@ export function createOpenClawCodingTools(options?: {
       return [workspaceOnly ? wrapToolWorkspaceRootGuard(wrapped, workspaceRoot) : wrapped];
     }
     if (tool.name === "edit") {
+      if (options?.disableEditTool) {
+        return [];
+      }
       if (sandboxRoot) {
         return [];
       }
@@ -431,15 +436,19 @@ export function createOpenClawCodingTools(options?: {
     ...(sandboxRoot
       ? allowWorkspaceWrites
         ? [
-            workspaceOnly
-              ? wrapToolWorkspaceRootGuardWithOptions(
-                  createSandboxedEditTool({ root: sandboxRoot, bridge: sandboxFsBridge! }),
-                  sandboxRoot,
-                  {
-                    containerWorkdir: sandbox.containerWorkdir,
-                  },
-                )
-              : createSandboxedEditTool({ root: sandboxRoot, bridge: sandboxFsBridge! }),
+            ...(options?.disableEditTool
+              ? []
+              : [
+                  workspaceOnly
+                    ? wrapToolWorkspaceRootGuardWithOptions(
+                        createSandboxedEditTool({ root: sandboxRoot, bridge: sandboxFsBridge! }),
+                        sandboxRoot,
+                        {
+                          containerWorkdir: sandbox.containerWorkdir,
+                        },
+                      )
+                    : createSandboxedEditTool({ root: sandboxRoot, bridge: sandboxFsBridge! }),
+                ]),
             workspaceOnly
               ? wrapToolWorkspaceRootGuardWithOptions(
                   createSandboxedWriteTool({ root: sandboxRoot, bridge: sandboxFsBridge! }),
