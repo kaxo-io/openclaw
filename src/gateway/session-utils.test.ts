@@ -10,6 +10,7 @@ import {
   capArrayByJsonBytes,
   classifySessionKey,
   deriveSessionTitle,
+  ensureSessionEntryHasSessionId,
   listAgentsForGateway,
   listSessionsFromStore,
   loadSessionEntry,
@@ -566,6 +567,98 @@ describe("gateway session utils", () => {
     const result = listAgentsForGateway(cfg);
     const ops = result.agents.find((agent) => agent.id === "ops");
     expect(ops?.model).toEqual({ primary: "anthropic/claude-opus-4-6" });
+  });
+});
+
+describe("ensureSessionEntryHasSessionId", () => {
+  test("recovers missing sessionId from an existing sessionFile", async () => {
+    await withStateDirEnv("openclaw-session-utils-recover-file-", async ({ stateDir }) => {
+      const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const storePath = path.join(sessionsDir, "sessions.json");
+      const sessionKey = "agent:main:main";
+      const sessionId = "11111111-2222-3333-4444-555555555555";
+      const sessionFile = `${sessionId}.jsonl`;
+
+      fs.writeFileSync(path.join(sessionsDir, sessionFile), '{"type":"session"}\n', "utf8");
+      fs.writeFileSync(
+        storePath,
+        JSON.stringify({
+          [sessionKey]: {
+            sessionId: null,
+            sessionFile,
+            updatedAt: 1,
+          },
+        }),
+        "utf8",
+      );
+
+      const cfg = {
+        session: { mainKey: "main", store: storePath },
+        agents: { list: [{ id: "main", default: true }] },
+      } as OpenClawConfig;
+
+      const entry = JSON.parse(fs.readFileSync(storePath, "utf8"))[sessionKey] as SessionEntry;
+      const recovered = await ensureSessionEntryHasSessionId({
+        cfg,
+        storePath,
+        canonicalKey: sessionKey,
+        entry,
+        agentId: "main",
+      });
+
+      expect(recovered?.sessionId).toBe(sessionId);
+      const saved = JSON.parse(fs.readFileSync(storePath, "utf8"));
+      expect(saved[sessionKey]?.sessionId).toBe(sessionId);
+      expect(saved[sessionKey]?.sessionFile).toBe(sessionFile);
+    });
+  });
+
+  test("recovers missing session identity from transcript metadata marker", async () => {
+    await withStateDirEnv("openclaw-session-utils-recover-marker-", async ({ stateDir }) => {
+      const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const storePath = path.join(sessionsDir, "sessions.json");
+      const sessionKey = "agent:main:main";
+      const sessionId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+      const transcript = path.join(sessionsDir, `${sessionId}.jsonl`);
+
+      fs.writeFileSync(
+        transcript,
+        '{"type":"message","message":{"role":"toolResult","details":{"sessionKey":"agent:main:main"}}}\n',
+        "utf8",
+      );
+      fs.writeFileSync(
+        storePath,
+        JSON.stringify({
+          [sessionKey]: {
+            sessionId: null,
+            sessionFile: null,
+            updatedAt: 1,
+          },
+        }),
+        "utf8",
+      );
+
+      const cfg = {
+        session: { mainKey: "main", store: storePath },
+        agents: { list: [{ id: "main", default: true }] },
+      } as OpenClawConfig;
+
+      const entry = JSON.parse(fs.readFileSync(storePath, "utf8"))[sessionKey] as SessionEntry;
+      const recovered = await ensureSessionEntryHasSessionId({
+        cfg,
+        storePath,
+        canonicalKey: sessionKey,
+        entry,
+        agentId: "main",
+      });
+
+      expect(recovered?.sessionId).toBe(sessionId);
+      const saved = JSON.parse(fs.readFileSync(storePath, "utf8"));
+      expect(saved[sessionKey]?.sessionId).toBe(sessionId);
+      expect(saved[sessionKey]?.sessionFile).toBe(`${sessionId}.jsonl`);
+    });
   });
 });
 

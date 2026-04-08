@@ -30,13 +30,17 @@ import { resolveStateDir } from "../config/paths.js";
 import {
   buildGroupDisplayName,
   loadSessionStore,
+  mergeSessionEntry,
   resolveAllAgentSessionStoreTargetsSync,
   resolveAgentMainSessionKey,
   resolveFreshSessionTotalTokens,
+  resolveMainSessionKey,
+  resolveSessionTranscriptsDirForAgent,
   resolveStorePath,
   type SessionEntry,
   type SessionStoreTarget,
   type SessionScope,
+  updateSessionStore,
 } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { openBoundaryFileSync } from "../infra/boundary-file-read.js";
@@ -70,6 +74,7 @@ import {
 import {
   readLatestSessionUsageFromTranscript,
   readSessionTitleFieldsFromTranscript,
+  resolveSessionTranscriptCandidates,
 } from "./session-utils.fs.js";
 import type {
   GatewayAgentRow,
@@ -103,6 +108,7 @@ export type {
 } from "./session-utils.types.js";
 
 const DERIVED_TITLE_MAX_LEN = 60;
+const { promises: fsPromises } = fs;
 
 function tryResolveExistingPath(value: string): string | null {
   try {
@@ -1432,4 +1438,209 @@ export function listSessionsFromStore(params: {
     defaults: getSessionDefaults(cfg),
     sessions,
   };
+}
+
+const SESSION_SEARCH_MARKER_PREFIX = "Session: ";
+const SESSION_FILE_SCAN_CHUNK_SIZE = 64 * 1024;
+
+function buildSessionSearchMarkers(sessionKey: string): string[] {
+  return [
+    `${SESSION_SEARCH_MARKER_PREFIX}${sessionKey}`,
+    `"sessionKey":"${sessionKey}"`,
+    `"sessionKey": "${sessionKey}"`,
+    `"sourceSessionKey":"${sessionKey}"`,
+    `"sourceSessionKey": "${sessionKey}"`,
+  ];
+}
+
+async function fileContainsSessionKey(filePath: string, markers: string[]): Promise<boolean> {
+  if (markers.length === 0) {
+    return false;
+  }
+  const maxMarkerLength = Math.max(...markers.map((marker) => marker.length), 0);
+  let handle: fs.promises.FileHandle | undefined;
+  try {
+    handle = await fsPromises.open(filePath, "r");
+    const buffer = Buffer.alloc(SESSION_FILE_SCAN_CHUNK_SIZE);
+    let leftover = "";
+    while (true) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) {
+        return false;
+      }
+      const chunk = leftover + buffer.toString("utf8", 0, bytesRead);
+      if (markers.some((marker) => chunk.includes(marker))) {
+        return true;
+      }
+      leftover = chunk.slice(-maxMarkerLength);
+    }
+  } catch {
+    return false;
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function findSessionTranscriptForKey(params: {
+  agentId: string;
+  sessionKey: string;
+}): Promise<{ sessionId: string; sessionFile: string } | undefined> {
+  const sessionsDir = resolveSessionTranscriptsDirForAgent(params.agentId);
+  try {
+    await fsPromises.access(sessionsDir, fs.constants.R_OK);
+  } catch {
+    return undefined;
+  }
+  const markers = buildSessionSearchMarkers(params.sessionKey);
+  const queue: string[] = [sessionsDir];
+  let bestMatch: { fullPath: string; mtimeMs: number } | undefined;
+  while (queue.length > 0) {
+    const dir = queue.shift();
+    if (!dir) {
+      continue;
+    }
+    let entries: fs.Dirent[];
+    try {
+      entries = await fsPromises.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        queue.push(fullPath);
+        continue;
+      }
+      if (!entry.name.endsWith(".jsonl")) {
+        continue;
+      }
+      const contains = await fileContainsSessionKey(fullPath, markers);
+      if (!contains) {
+        continue;
+      }
+      let stats: fs.Stats;
+      try {
+        stats = await fsPromises.stat(fullPath);
+      } catch {
+        continue;
+      }
+      if (!bestMatch || stats.mtimeMs > bestMatch.mtimeMs) {
+        bestMatch = { fullPath, mtimeMs: stats.mtimeMs };
+      }
+    }
+  }
+  if (!bestMatch) {
+    return undefined;
+  }
+  const sessionId = path.basename(bestMatch.fullPath, path.extname(bestMatch.fullPath));
+  const sessionFile = path.relative(sessionsDir, bestMatch.fullPath);
+  return { sessionId, sessionFile };
+}
+
+function inferSessionIdFromSessionFile(sessionFile?: string): string | undefined {
+  const trimmed = sessionFile?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const fileName = path.basename(trimmed, path.extname(trimmed)).trim();
+  return fileName || undefined;
+}
+
+function transcriptExistsForSession(params: {
+  sessionId: string;
+  storePath?: string;
+  sessionFile?: string;
+  agentId: string;
+}): boolean {
+  const candidates = resolveSessionTranscriptCandidates(
+    params.sessionId,
+    params.storePath,
+    params.sessionFile,
+    params.agentId,
+  );
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        return true;
+      }
+    } catch {
+      // Best-effort.
+    }
+  }
+  return false;
+}
+
+async function persistRecoveredSessionIdentity(params: {
+  cfg: OpenClawConfig;
+  storePath: string;
+  canonicalKey: string;
+  sessionId: string;
+  sessionFile?: string;
+}): Promise<SessionEntry> {
+  const nextEntryPatch: SessionEntry = {
+    sessionId: params.sessionId,
+    sessionFile: params.sessionFile,
+    updatedAt: Date.now(),
+  };
+  return await updateSessionStore(params.storePath, (store) => {
+    const target = resolveGatewaySessionStoreTarget({
+      cfg: params.cfg,
+      key: params.canonicalKey,
+      store,
+    });
+    pruneLegacyStoreKeys({
+      store,
+      canonicalKey: target.canonicalKey,
+      candidates: target.storeKeys,
+    });
+    const result = mergeSessionEntry(store[target.canonicalKey], nextEntryPatch);
+    store[target.canonicalKey] = result;
+    return result;
+  });
+}
+
+export async function ensureSessionEntryHasSessionId(params: {
+  cfg: OpenClawConfig;
+  storePath?: string;
+  canonicalKey: string;
+  entry?: SessionEntry;
+  agentId: string;
+}): Promise<SessionEntry | undefined> {
+  if (!params.storePath || !params.entry || params.entry.sessionId) {
+    return params.entry;
+  }
+  const inferredSessionId = inferSessionIdFromSessionFile(params.entry.sessionFile);
+  if (
+    inferredSessionId &&
+    transcriptExistsForSession({
+      sessionId: inferredSessionId,
+      storePath: params.storePath,
+      sessionFile: params.entry.sessionFile,
+      agentId: params.agentId,
+    })
+  ) {
+    return await persistRecoveredSessionIdentity({
+      cfg: params.cfg,
+      storePath: params.storePath,
+      canonicalKey: params.canonicalKey,
+      sessionId: inferredSessionId,
+      sessionFile: params.entry.sessionFile,
+    });
+  }
+
+  const candidate = await findSessionTranscriptForKey({
+    agentId: params.agentId,
+    sessionKey: params.canonicalKey,
+  });
+  if (!candidate) {
+    return params.entry;
+  }
+  const merged = await persistRecoveredSessionIdentity({
+    cfg: params.cfg,
+    storePath: params.storePath,
+    canonicalKey: params.canonicalKey,
+    sessionId: candidate.sessionId,
+    sessionFile: candidate.sessionFile,
+  });
+  return merged;
 }
