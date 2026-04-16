@@ -125,9 +125,30 @@ export function resolveSessionTranscriptCandidates(
   agentId?: string,
 ): string[] {
   const candidates: string[] = [];
+  const addResetFallbackCandidates = (candidatePath: string): void => {
+    const baseName = path.basename(candidatePath);
+    if (!baseName.endsWith(".jsonl") || baseName.includes(".reset.")) {
+      return;
+    }
+    const dir = path.dirname(candidatePath);
+    const resetPrefix = `${baseName}.reset.`;
+    try {
+      const resetCandidates = fs
+        .readdirSync(dir)
+        .filter((name) => name.startsWith(resetPrefix))
+        .toSorted()
+        .toReversed()
+        .map((name) => path.join(dir, name));
+      candidates.push(...resetCandidates);
+    } catch {
+      // Best-effort fallback only.
+    }
+  };
   const pushCandidate = (resolve: () => string): void => {
     try {
-      candidates.push(resolve());
+      const candidate = resolve();
+      candidates.push(candidate);
+      addResetFallbackCandidates(candidate);
     } catch {
       // Ignore invalid paths/IDs and keep scanning other safe candidates.
     }
@@ -147,7 +168,9 @@ export function resolveSessionTranscriptCandidates(
     } else {
       const trimmed = sessionFile.trim();
       if (trimmed) {
-        candidates.push(path.resolve(trimmed));
+        const candidate = path.resolve(trimmed);
+        candidates.push(candidate);
+        addResetFallbackCandidates(candidate);
       }
     }
   }
