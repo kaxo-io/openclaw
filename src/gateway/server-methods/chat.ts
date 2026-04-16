@@ -40,6 +40,7 @@ import {
 import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
 import {
   capArrayByJsonBytes,
+  ensureSessionEntryHasSessionId,
   loadSessionEntry,
   readSessionMessages,
   resolveSessionModelRef,
@@ -585,10 +586,24 @@ export const chatHandlers: GatewayRequestHandlers = {
       sessionKey: string;
       limit?: number;
     };
-    const { cfg, storePath, entry } = loadSessionEntry(sessionKey);
-    const sessionId = entry?.sessionId;
+    const { cfg, storePath, entry, canonicalKey } = loadSessionEntry(sessionKey);
+    const sessionAgentId = resolveSessionAgentId({ sessionKey: canonicalKey, config: cfg });
+    let sessionEntry = entry;
+    if (sessionEntry && storePath && !sessionEntry.sessionId) {
+      sessionEntry =
+        (await ensureSessionEntryHasSessionId({
+          cfg,
+          storePath,
+          canonicalKey,
+          entry: sessionEntry,
+          agentId: sessionAgentId,
+        })) ?? sessionEntry;
+    }
+    const sessionId = sessionEntry?.sessionId ?? sessionEntry?.systemPromptReport?.sessionId;
     const rawMessages =
-      sessionId && storePath ? readSessionMessages(sessionId, storePath, entry?.sessionFile) : [];
+      sessionId && storePath
+        ? readSessionMessages(sessionId, storePath, sessionEntry?.sessionFile)
+        : [];
     const hardMax = 1000;
     const defaultLimit = 200;
     const requested = typeof limit === "number" ? limit : defaultLimit;
@@ -611,10 +626,9 @@ export const chatHandlers: GatewayRequestHandlers = {
         `chat.history omitted oversized payloads placeholders=${placeholderCount} total=${chatHistoryPlaceholderEmitCount}`,
       );
     }
-    let thinkingLevel = entry?.thinkingLevel;
+    let thinkingLevel = sessionEntry?.thinkingLevel;
     if (!thinkingLevel) {
-      const sessionAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
-      const { provider, model } = resolveSessionModelRef(cfg, entry, sessionAgentId);
+      const { provider, model } = resolveSessionModelRef(cfg, sessionEntry, sessionAgentId);
       const catalog = await context.loadGatewayModelCatalog();
       thinkingLevel = resolveThinkingDefault({
         cfg,
@@ -623,7 +637,7 @@ export const chatHandlers: GatewayRequestHandlers = {
         catalog,
       });
     }
-    const verboseLevel = entry?.verboseLevel ?? cfg.agents?.defaults?.verboseDefault;
+    const verboseLevel = sessionEntry?.verboseLevel ?? cfg.agents?.defaults?.verboseDefault;
     respond(true, {
       sessionKey,
       sessionId,

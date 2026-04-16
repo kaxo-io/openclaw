@@ -975,7 +975,7 @@ async function findSessionTranscriptForKey(params: {
         queue.push(fullPath);
         continue;
       }
-      if (!entry.name.endsWith(".jsonl")) {
+      if (!entry.name.endsWith(".jsonl") && !entry.name.includes(".jsonl.reset.")) {
         continue;
       }
       const contains = await fileContainsSessionKey(fullPath, markers);
@@ -996,8 +996,11 @@ async function findSessionTranscriptForKey(params: {
   if (!bestMatch) {
     return undefined;
   }
-  const sessionId = path.basename(bestMatch.fullPath, path.extname(bestMatch.fullPath));
   const sessionFile = path.relative(sessionsDir, bestMatch.fullPath);
+  const sessionId = inferSessionIdFromSessionFile(sessionFile);
+  if (!sessionId) {
+    return undefined;
+  }
   return { sessionId, sessionFile };
 }
 
@@ -1006,8 +1009,57 @@ function inferSessionIdFromSessionFile(sessionFile?: string): string | undefined
   if (!trimmed) {
     return undefined;
   }
-  const fileName = path.basename(trimmed, path.extname(trimmed)).trim();
+  const resetIndex = trimmed.indexOf(".reset.");
+  const normalized = resetIndex === -1 ? trimmed : trimmed.slice(0, resetIndex);
+  const baseName = path.basename(normalized).trim();
+  const fileName = baseName.endsWith(".jsonl") ? baseName.slice(0, -".jsonl".length) : baseName;
   return fileName || undefined;
+}
+
+function findExistingTranscriptForSession(params: {
+  sessionId: string;
+  storePath: string;
+  sessionFile?: string;
+  agentId: string;
+}): { sessionId: string; sessionFile?: string } | undefined {
+  const sessionsDir = resolveSessionTranscriptsDirForAgent(params.agentId);
+  for (const candidate of resolveSessionTranscriptCandidates(
+    params.sessionId,
+    params.storePath,
+    params.sessionFile,
+    params.agentId,
+  )) {
+    try {
+      if (!fs.existsSync(candidate)) {
+        continue;
+      }
+      const relative = path.relative(sessionsDir, candidate);
+      const sessionFile =
+        relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? relative : undefined;
+      return {
+        sessionId: inferSessionIdFromSessionFile(sessionFile ?? candidate) ?? params.sessionId,
+        sessionFile,
+      };
+    } catch {
+      // Best-effort.
+    }
+  }
+  return undefined;
+}
+
+function collectCheckpointSessionIds(entry: SessionEntry): string[] {
+  const checkpoints = Array.isArray(entry.compactionCheckpoints) ? entry.compactionCheckpoints : [];
+  const seen = new Set<string>();
+  const sessionIds: string[] = [];
+  for (const checkpoint of checkpoints.toReversed()) {
+    const sessionId = checkpoint?.sessionId?.trim();
+    if (!sessionId || seen.has(sessionId)) {
+      continue;
+    }
+    seen.add(sessionId);
+    sessionIds.push(sessionId);
+  }
+  return sessionIds;
 }
 
 function transcriptExistsForSession(params: {
@@ -1089,6 +1141,24 @@ export async function ensureSessionEntryHasSessionId(params: {
       canonicalKey: params.canonicalKey,
       sessionId: inferredSessionId,
       sessionFile: params.entry.sessionFile,
+    });
+  }
+
+  for (const checkpointSessionId of collectCheckpointSessionIds(params.entry)) {
+    const recovered = findExistingTranscriptForSession({
+      sessionId: checkpointSessionId,
+      storePath: params.storePath,
+      agentId: params.agentId,
+    });
+    if (!recovered) {
+      continue;
+    }
+    return await persistRecoveredSessionIdentity({
+      cfg: params.cfg,
+      storePath: params.storePath,
+      canonicalKey: params.canonicalKey,
+      sessionId: recovered.sessionId,
+      sessionFile: recovered.sessionFile,
     });
   }
 

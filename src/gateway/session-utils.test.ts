@@ -15,6 +15,7 @@ import {
   loadCombinedSessionStoreForGateway,
   parseGroupKey,
   pruneLegacyStoreKeys,
+  readSessionMessages,
   resolveGatewaySessionStoreTarget,
   resolveSessionModelIdentityRef,
   resolveSessionModelRef,
@@ -418,6 +419,65 @@ describe("ensureSessionEntryHasSessionId", () => {
       const saved = JSON.parse(fs.readFileSync(storePath, "utf8"));
       expect(saved[sessionKey]?.sessionId).toBe(sessionId);
       expect(saved[sessionKey]?.sessionFile).toBe(`${sessionId}.jsonl`);
+    });
+  });
+
+  test("recovers missing session identity from reset transcript referenced by compaction checkpoints", async () => {
+    await withStateDirEnv("openclaw-session-utils-recover-reset-", async ({ stateDir }) => {
+      const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const storePath = path.join(sessionsDir, "sessions.json");
+      const sessionKey = "agent:main:main";
+      const sessionId = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+      const sessionFile = `${sessionId}.jsonl.reset.2026-04-08T18-53-08.545Z`;
+
+      fs.writeFileSync(
+        path.join(sessionsDir, sessionFile),
+        '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"still here after /new"}]}}\n',
+        "utf8",
+      );
+      fs.writeFileSync(
+        storePath,
+        JSON.stringify({
+          [sessionKey]: {
+            sessionId: null,
+            sessionFile: null,
+            updatedAt: 1,
+            compactionCheckpoints: [
+              {
+                checkpointId: "cp-1",
+                sessionKey,
+                sessionId,
+                createdAt: 2,
+                reason: "overflow-retry",
+              },
+            ],
+          },
+        }),
+        "utf8",
+      );
+
+      const cfg = {
+        session: { mainKey: "main", store: storePath },
+        agents: { list: [{ id: "main", default: true }] },
+      } as OpenClawConfig;
+
+      const entry = JSON.parse(fs.readFileSync(storePath, "utf8"))[sessionKey] as SessionEntry;
+      const recovered = await ensureSessionEntryHasSessionId({
+        cfg,
+        storePath,
+        canonicalKey: sessionKey,
+        entry,
+        agentId: "main",
+      });
+
+      expect(recovered?.sessionId).toBe(sessionId);
+      expect(recovered?.sessionFile).toBe(sessionFile);
+      const messages = readSessionMessages(sessionId, storePath, recovered?.sessionFile);
+      expect(messages).toHaveLength(1);
+      const saved = JSON.parse(fs.readFileSync(storePath, "utf8"));
+      expect(saved[sessionKey]?.sessionId).toBe(sessionId);
+      expect(saved[sessionKey]?.sessionFile).toBe(sessionFile);
     });
   });
 });
