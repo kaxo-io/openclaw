@@ -36,10 +36,12 @@ function extractGeneratedTranscriptSessionId(sessionFile?: string): string | und
     return undefined;
   }
   const base = path.basename(trimmed);
-  if (!base.endsWith(".jsonl")) {
+  const resetIndex = base.indexOf(".jsonl.reset.");
+  const normalizedBase = resetIndex === -1 ? base : `${base.slice(0, resetIndex)}.jsonl`;
+  if (!normalizedBase.endsWith(".jsonl")) {
     return undefined;
   }
-  const withoutExt = base.slice(0, -".jsonl".length);
+  const withoutExt = normalizedBase.slice(0, -".jsonl".length);
   const topicIndex = withoutExt.indexOf("-topic-");
   if (topicIndex > 0) {
     const topicSessionId = withoutExt.slice(0, topicIndex);
@@ -75,9 +77,30 @@ export function resolveSessionTranscriptCandidates(
 ): string[] {
   const candidates: string[] = [];
   const sessionFileState = classifySessionTranscriptCandidate(sessionId, sessionFile);
+  const addResetFallbackCandidates = (candidatePath: string): void => {
+    const baseName = path.basename(candidatePath);
+    if (!baseName.endsWith(".jsonl") || baseName.includes(".reset.")) {
+      return;
+    }
+    const dir = path.dirname(candidatePath);
+    const resetPrefix = `${baseName}.reset.`;
+    try {
+      const resetCandidates = fs
+        .readdirSync(dir)
+        .filter((name) => name.startsWith(resetPrefix))
+        .toSorted()
+        .toReversed()
+        .map((name) => path.join(dir, name));
+      candidates.push(...resetCandidates);
+    } catch {
+      // Best-effort fallback only.
+    }
+  };
   const pushCandidate = (resolve: () => string): void => {
     try {
-      candidates.push(resolve());
+      const candidate = resolve();
+      candidates.push(candidate);
+      addResetFallbackCandidates(candidate);
     } catch {
       // Ignore invalid paths/IDs and keep scanning other safe candidates.
     }
@@ -104,7 +127,9 @@ export function resolveSessionTranscriptCandidates(
     } else {
       const trimmed = sessionFile.trim();
       if (trimmed) {
-        candidates.push(path.resolve(trimmed));
+        const candidate = path.resolve(trimmed);
+        candidates.push(candidate);
+        addResetFallbackCandidates(candidate);
       }
     }
   }

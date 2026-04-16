@@ -532,6 +532,55 @@ describe("gateway server chat", () => {
     }
   });
 
+  test("chat.history recovers missing session identity from checkpoint reset transcripts", async () => {
+    await withMainSessionStore(async (dir) => {
+      const recoveredSessionId = "sess-main";
+      const recoveredSessionFile = `${recoveredSessionId}.jsonl.reset.2026-04-16T14-00-00.000Z`;
+      await writeSessionStore({
+        entries: {
+          main: {
+            sessionId: null,
+            sessionFile: null,
+            updatedAt: Date.now(),
+            compactionCheckpoints: [
+              {
+                checkpointId: "cp-1",
+                sessionKey: "agent:main:main",
+                sessionId: recoveredSessionId,
+                createdAt: Date.now(),
+                reason: "overflow-retry",
+              },
+            ],
+          },
+        },
+      });
+      await fs.writeFile(
+        path.join(dir, recoveredSessionFile),
+        `${JSON.stringify({
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "still here after /new" }],
+            timestamp: 1,
+          },
+        })}\n`,
+        "utf-8",
+      );
+
+      const historyRes = await rpcReq<{ messages?: unknown[] }>(ws, "chat.history", {
+        sessionKey: "main",
+      });
+      expect(historyRes.ok).toBe(true);
+      const historyMessages = historyRes.payload?.messages ?? [];
+      expect(historyMessages).toHaveLength(1);
+      expect(extractFirstTextBlock(historyMessages[0])).toBe("still here after /new");
+
+      const savedStore = JSON.parse(
+        await fs.readFile(path.join(dir, "sessions.json"), "utf-8"),
+      ) as Record<string, { sessionId?: string | null; sessionFile?: string | null } | undefined>;
+      expect(savedStore["agent:main:main"]?.sessionId).toBe(recoveredSessionId);
+    });
+  });
+
   test("chat.history hides assistant NO_REPLY-only entries", async () => {
     const historyMessages = await loadChatHistoryWithMessages(buildNoReplyHistoryFixture());
     const textValues = collectHistoryTextValues(historyMessages);

@@ -72,6 +72,7 @@ import { CHAT_SEND_SESSION_KEY_MAX_LENGTH } from "../protocol/schema/primitives.
 import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
 import {
   capArrayByJsonBytes,
+  ensureSessionEntryHasSessionId,
   loadSessionEntry,
   resolveGatewayModelSupportsImages,
   readSessionMessages,
@@ -1621,14 +1622,25 @@ export const chatHandlers: GatewayRequestHandlers = {
       limit?: number;
       maxChars?: number;
     };
-    const { cfg, storePath, entry } = loadSessionEntry(sessionKey);
-    const sessionId = entry?.sessionId;
-    const sessionAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
-    const resolvedSessionModel = resolveSessionModelRef(cfg, entry, sessionAgentId);
+    const { cfg, storePath, entry, canonicalKey } = loadSessionEntry(sessionKey);
+    const sessionAgentId = resolveSessionAgentId({ sessionKey: canonicalKey, config: cfg });
+    let sessionEntry = entry;
+    if (sessionEntry && storePath && !sessionEntry.sessionId) {
+      sessionEntry =
+        (await ensureSessionEntryHasSessionId({
+          cfg,
+          storePath,
+          canonicalKey,
+          entry: sessionEntry,
+          agentId: sessionAgentId,
+        })) ?? sessionEntry;
+    }
+    const sessionId = sessionEntry?.sessionId ?? sessionEntry?.systemPromptReport?.sessionId;
+    const resolvedSessionModel = resolveSessionModelRef(cfg, sessionEntry, sessionAgentId);
     const localMessages =
-      sessionId && storePath ? readSessionMessages(sessionId, storePath, entry?.sessionFile) : [];
+      sessionId && storePath ? readSessionMessages(sessionId, storePath, sessionEntry?.sessionFile) : [];
     const rawMessages = augmentChatHistoryWithCliSessionImports({
-      entry,
+      entry: sessionEntry,
       provider: resolvedSessionModel.provider,
       localMessages,
     });
@@ -1657,7 +1669,7 @@ export const chatHandlers: GatewayRequestHandlers = {
         `chat.history omitted oversized payloads placeholders=${placeholderCount} total=${chatHistoryPlaceholderEmitCount}`,
       );
     }
-    let thinkingLevel = entry?.thinkingLevel;
+    let thinkingLevel = sessionEntry?.thinkingLevel;
     if (!thinkingLevel) {
       const catalog = await context.loadGatewayModelCatalog();
       thinkingLevel = resolveThinkingDefault({
@@ -1667,7 +1679,7 @@ export const chatHandlers: GatewayRequestHandlers = {
         catalog,
       });
     }
-    const verboseLevel = entry?.verboseLevel ?? cfg.agents?.defaults?.verboseDefault;
+    const verboseLevel = sessionEntry?.verboseLevel ?? cfg.agents?.defaults?.verboseDefault;
     respond(true, {
       sessionKey,
       sessionId,
