@@ -67,6 +67,68 @@ export type {
   ExecToolDetails,
 } from "./bash-tools.exec-types.js";
 
+const EXACT_COMMAND_GUARD_AGENT_IDS = new Set(["cryptoadvisor"]);
+const EXACT_COMMAND_GUARD_DISCOVERY_RE = /(^|[\s|;&()])(?:find|grep|ls|rg|which)(?:\s|$)/u;
+const EXACT_COMMAND_GUARD_CHAIN_RE = /(\n|&&|\|\||;|<<|`|\$\()/u;
+const EXACT_COMMAND_GUARD_INLINE_SCRIPT_RE =
+  /(^|\s)(?:python3?|python|node|ruby|perl)\s+(?:-[^\s]+\s+)*-(?:c|e)\b/iu;
+const EXACT_COMMAND_GUARD_CRON_CONTEXT_RE =
+  /\[(?:cron|MEMORY-CHECKPOINT)\b|memory-checkpoint|self-check|anti-pattern|heartbeat/iu;
+
+function normalizePromptCommandText(value: string): string {
+  return value.trim().replace(/\s+/gu, " ");
+}
+
+function promptContainsExactCommand(params: { promptText: string; command: string }): boolean {
+  const normalizedPrompt = normalizePromptCommandText(params.promptText);
+  const normalizedCommand = normalizePromptCommandText(params.command);
+  return normalizedCommand.length > 0 && normalizedPrompt.includes(normalizedCommand);
+}
+
+function validateExactCommandPromptDiscipline(params: {
+  agentId?: string;
+  command: string;
+  promptText?: string;
+}): void {
+  const agentId = params.agentId?.trim().toLowerCase();
+  const promptText = params.promptText ?? "";
+  if (!agentId || !EXACT_COMMAND_GUARD_AGENT_IDS.has(agentId)) {
+    return;
+  }
+  if (!EXACT_COMMAND_GUARD_CRON_CONTEXT_RE.test(promptText)) {
+    return;
+  }
+
+  const command = params.command.trim();
+  if (EXACT_COMMAND_GUARD_CHAIN_RE.test(command)) {
+    throw new Error(
+      [
+        "exec exact-command guard: blocked shell chaining in CryptoAdvisor cron/self-check context.",
+        "Run one literal command per tool call, or use a pre-existing script named explicitly by the prompt.",
+      ].join("\n"),
+    );
+  }
+  if (EXACT_COMMAND_GUARD_INLINE_SCRIPT_RE.test(command)) {
+    throw new Error(
+      [
+        "exec exact-command guard: blocked inline interpreter payload in CryptoAdvisor cron/self-check context.",
+        "Use an existing script file instead of python -c/node -e/perl -e/ruby -e.",
+      ].join("\n"),
+    );
+  }
+  if (promptContainsExactCommand({ promptText, command: params.command })) {
+    return;
+  }
+  if (EXACT_COMMAND_GUARD_DISCOVERY_RE.test(command)) {
+    throw new Error(
+      [
+        "exec exact-command guard: blocked shell discovery command in CryptoAdvisor cron/self-check context.",
+        "Use known file paths or a command that appears exactly in the cron prompt.",
+      ].join("\n"),
+    );
+  }
+}
+
 function buildExecForegroundResult(params: {
   outcome: ExecProcessOutcome;
   cwd?: string;
@@ -1605,6 +1667,11 @@ export function createExecTool(
 
       // Preflight: catch a common model failure mode (shell syntax leaking into Python/JS sources)
       // before we execute and burn tokens in cron loops.
+      validateExactCommandPromptDiscipline({
+        agentId,
+        command: params.command,
+        promptText: defaults?.turnPromptRef?.current,
+      });
       if (!shouldSkipExecScriptPreflight({ host, security, ask })) {
         await validateScriptFileForShellBleed({ command: params.command, workdir });
       }

@@ -1364,6 +1364,7 @@ export async function runEmbeddedAttempt(
             ...buildEmbeddedAttemptToolRunContext({ ...params, trace: runTrace }),
             exec: {
               ...params.execOverrides,
+              turnPromptRef: { current: params.prompt },
               elevated: params.bashElevated,
             },
             sandbox,

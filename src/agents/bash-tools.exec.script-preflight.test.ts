@@ -112,6 +112,72 @@ describe("exec interactive OpenClaw channel login guard", () => {
 });
 
 describeNonWin("exec script preflight", () => {
+  it("blocks shell chaining in CryptoAdvisor cron exact-command contexts", async () => {
+    await withTempDir("openclaw-exec-preflight-exact-command-", async (tmp) => {
+      const tool = createExecTool({
+        host: "gateway",
+        security: "full",
+        ask: "off",
+        agentId: "cryptoadvisor",
+        turnPromptRef: {
+          current:
+            "[cron:abc CryptoAdvisor Memory Checkpoint] [MEMORY-CHECKPOINT] Write durable state.",
+        },
+      });
+
+      await expect(
+        tool.execute("call-chain", {
+          command: "cat HARD-RULES.md && curl -s http://192.168.2.51:3847/tasks",
+          workdir: tmp,
+        }),
+      ).rejects.toThrow(/exec exact-command guard: blocked shell chaining/);
+    });
+  });
+
+  it("blocks discovery commands in CryptoAdvisor cron exact-command contexts", async () => {
+    await withTempDir("openclaw-exec-preflight-exact-command-", async (tmp) => {
+      const tool = createExecTool({
+        host: "gateway",
+        security: "full",
+        ask: "off",
+        agentId: "cryptoadvisor",
+        turnPromptRef: {
+          current: "[cron:def CryptoAdvisor Anti-Pattern Self-Check] Run the self-check.",
+        },
+      });
+
+      await expect(
+        tool.execute("call-discovery", {
+          command: "find /home/node/.openclaw/workspace-cryptoadvisor -name HARD-RULES.md",
+          workdir: tmp,
+        }),
+      ).rejects.toThrow(/exec exact-command guard: blocked shell discovery command/);
+    });
+  });
+
+  it("allows a discovered-looking command when it appears exactly in the cron prompt", async () => {
+    await withTempDir("openclaw-exec-preflight-exact-command-", async (tmp) => {
+      const tool = createExecTool({
+        host: "gateway",
+        security: "full",
+        ask: "off",
+        agentId: "cryptoadvisor",
+        turnPromptRef: {
+          current:
+            "[cron:ghi CryptoAdvisor Exact Command] Run this exact command: grep needle source.txt",
+        },
+      });
+      await fs.writeFile(path.join(tmp, "source.txt"), "needle\n", "utf-8");
+
+      const result = await tool.execute("call-exact", {
+        command: "grep needle source.txt",
+        workdir: tmp,
+      });
+      const text = result.content.find((block) => block.type === "text")?.text ?? "";
+      expect(text).toContain("needle");
+    });
+  });
+
   it("blocks shell env var injection tokens in python scripts before execution", async () => {
     await withTempDir("openclaw-exec-preflight-", async (tmp) => {
       const pyPath = path.join(tmp, "bad.py");

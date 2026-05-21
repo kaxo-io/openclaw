@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { hasAnyAuthProfileStoreSource } from "../../agents/auth-profiles/source-check.js";
 import { resolveAgentHarnessPolicy } from "../../agents/harness/selection.js";
 import { listOpenAIAuthProfileProvidersForAgentRuntime } from "../../agents/openai-codex-routing.js";
@@ -182,6 +183,146 @@ type CronExecutionResult = Awaited<ReturnType<CronExecutionRuntime["executeCronR
 type CronModelCatalogRuntime = typeof import("./run-model-catalog.runtime.js");
 type CronDeliveryRuntime = typeof import("./run-delivery.runtime.js");
 type ResolvedCronDeliveryTarget = Awaited<ReturnType<CronDeliveryRuntime["resolveDeliveryTarget"]>>;
+
+const EXACT_COMMAND_PROMPT_RE = /run this exact command and report only the output:\s*(.+)$/imu;
+const EXACT_COMMAND_TOOL_NAMES = new Set([
+  "exec",
+  "bash",
+  "exec_command",
+  "functions.exec_command",
+]);
+
+function normalizeExactCommandText(raw: string): string {
+  let trimmed = raw.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.startsWith("`") && trimmed.endsWith("`") && trimmed.length > 1) {
+    trimmed = trimmed.slice(1, -1).trim();
+  }
+  for (const marker of [" CRITICAL", " - ", " — "]) {
+    const idx = trimmed.indexOf(marker);
+    if (idx > 0) {
+      trimmed = trimmed.slice(0, idx).trim();
+    }
+  }
+  return trimmed;
+}
+
+function parseExactCommandFromPrompt(message: string): string | undefined {
+  const match = message.match(EXACT_COMMAND_PROMPT_RE);
+  if (!match) {
+    return undefined;
+  }
+  const parsed = normalizeExactCommandText(match[1] ?? "");
+  return parsed.length > 0 ? parsed : undefined;
+}
+
+function extractCommandFromToolArgs(args: unknown): string | undefined {
+  let value = args;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const command = typeof record.command === "string" ? record.command : record.cmd;
+  return typeof command === "string" && command.trim() ? command.trim() : undefined;
+}
+
+function collectShellToolCommandsFromContent(content: unknown): string[] {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const commands: string[] = [];
+  for (const item of content) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    const type = typeof record.type === "string" ? record.type : "";
+    if (!["toolCall", "tool_call", "function_call"].includes(type)) {
+      continue;
+    }
+    const rawName = record.name ?? record.toolName ?? record.functionName;
+    if (typeof rawName !== "string") {
+      continue;
+    }
+    if (!EXACT_COMMAND_TOOL_NAMES.has(rawName.trim().toLowerCase())) {
+      continue;
+    }
+    const command = extractCommandFromToolArgs(record.arguments ?? record.args ?? record.input);
+    if (command) {
+      commands.push(command);
+    }
+  }
+  return commands;
+}
+
+function extractShellToolCommandsFromTranscript(jsonl: string): string[] {
+  const commands: string[] = [];
+  for (const line of jsonl.split(/\r?\n/u)) {
+    if (!line.trim()) {
+      continue;
+    }
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!record || typeof record !== "object") {
+      continue;
+    }
+    const top = record as Record<string, unknown>;
+    commands.push(...collectShellToolCommandsFromContent(top.content));
+    const message = top.message;
+    if (message && typeof message === "object") {
+      const messageRecord = message as Record<string, unknown>;
+      if (messageRecord.role === "assistant") {
+        commands.push(...collectShellToolCommandsFromContent(messageRecord.content));
+      }
+    }
+  }
+  return commands;
+}
+
+async function validateExactCommandDiscipline(params: {
+  expectedCommand: string;
+  transcriptPath?: string;
+}): Promise<string | undefined> {
+  if (!params.transcriptPath?.trim()) {
+    return "exact-command validation failed: missing transcript path";
+  }
+  let transcript: string;
+  try {
+    transcript = await readFile(params.transcriptPath, "utf-8");
+  } catch (err) {
+    return `exact-command validation failed: unable to read transcript (${String(err)})`;
+  }
+  const commands = extractShellToolCommandsFromTranscript(transcript);
+  if (commands.length === 0) {
+    return `exact-command violation: expected exactly one shell command, but found none (expected: ${params.expectedCommand})`;
+  }
+  if (commands.length !== 1) {
+    return `exact-command violation: expected exactly one shell command, but found ${commands.length}`;
+  }
+  if (commands[0] !== params.expectedCommand) {
+    return `exact-command violation: command mismatch (expected: ${params.expectedCommand}; observed: ${commands[0]})`;
+  }
+  return undefined;
+}
+
+export const __testing = {
+  parseExactCommandFromPrompt,
+  extractShellToolCommandsFromTranscript,
+  validateExactCommandDiscipline,
+} as const;
 
 function normalizeCronTraceTarget(
   target: CronDeliveryTraceTarget | undefined,
@@ -943,6 +1084,24 @@ async function finalizeCronRun(params: {
       ),
       ...telemetry,
     });
+  }
+  const expectedExactCommand = parseExactCommandFromPrompt(prepared.commandBody);
+  if (expectedExactCommand) {
+    const exactCommandViolation = await validateExactCommandDiscipline({
+      expectedCommand: expectedExactCommand,
+      transcriptPath: prepared.cronSession.sessionEntry.sessionFile,
+    });
+    if (exactCommandViolation) {
+      return prepared.withRunSession({
+        status: "error",
+        error: exactCommandViolation,
+        diagnostics: mergeCronRunDiagnostics(
+          createCronRunDiagnosticsFromAgentResult(finalRunResult, { finalStatus: "error" }),
+          createCronRunDiagnosticsFromError("exact-command", exactCommandViolation),
+        ),
+        ...telemetry,
+      });
+    }
   }
   let {
     summary,

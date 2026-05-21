@@ -101,6 +101,7 @@ export type CronRunDiagnosticSeverity = "info" | "warn" | "error";
 export type CronRunDiagnosticSource =
   | "cron-preflight"
   | "cron-setup"
+  | "exact-command"
   | "model-preflight"
   | "agent-run"
   | "tool"

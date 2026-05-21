@@ -20,6 +20,7 @@ function normalizeSource(value: unknown): CronRunDiagnosticSource {
   switch (value) {
     case "cron-preflight":
     case "cron-setup":
+    case "exact-command":
     case "model-preflight":
     case "agent-run":
     case "tool":
