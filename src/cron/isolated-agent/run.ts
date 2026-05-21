@@ -191,6 +191,8 @@ const EXACT_COMMAND_TOOL_NAMES = new Set([
   "exec_command",
   "functions.exec_command",
 ]);
+const SIMPLE_EXACT_COMMAND_BLOCKLIST_RE = /(\n|&&|\|\||;|<<|`|\$\()/u;
+const POSIX_SHELL_LC_RE = /^(?:\/bin\/)?(?:ba)?sh\s+-lc\s+'([\s\S]*)'$/u;
 
 function normalizeExactCommandText(raw: string): string {
   let trimmed = raw.trim();
@@ -233,6 +235,31 @@ function extractCommandFromToolArgs(args: unknown): string | undefined {
   const record = value as Record<string, unknown>;
   const command = typeof record.command === "string" ? record.command : record.cmd;
   return typeof command === "string" && command.trim() ? command.trim() : undefined;
+}
+
+function unquoteSingleQuotedShellPayload(value: string): string {
+  return value.replace(/'\\''|'"'"'/gu, "'");
+}
+
+function unwrapTransparentShellTransport(command: string): string | undefined {
+  const match = command.match(POSIX_SHELL_LC_RE);
+  if (!match) {
+    return undefined;
+  }
+  return unquoteSingleQuotedShellPayload(match[1] ?? "").trim();
+}
+
+function observedCommandMatchesExpected(params: {
+  observedCommand: string;
+  expectedCommand: string;
+}): boolean {
+  if (params.observedCommand === params.expectedCommand) {
+    return true;
+  }
+  if (SIMPLE_EXACT_COMMAND_BLOCKLIST_RE.test(params.expectedCommand)) {
+    return false;
+  }
+  return unwrapTransparentShellTransport(params.observedCommand) === params.expectedCommand;
 }
 
 function collectShellToolCommandsFromContent(content: unknown): string[] {
@@ -312,7 +339,12 @@ async function validateExactCommandDiscipline(params: {
   if (commands.length !== 1) {
     return `exact-command violation: expected exactly one shell command, but found ${commands.length}`;
   }
-  if (commands[0] !== params.expectedCommand) {
+  if (
+    !observedCommandMatchesExpected({
+      observedCommand: commands[0],
+      expectedCommand: params.expectedCommand,
+    })
+  ) {
     return `exact-command violation: command mismatch (expected: ${params.expectedCommand}; observed: ${commands[0]})`;
   }
   return undefined;

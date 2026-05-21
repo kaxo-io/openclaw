@@ -70,4 +70,68 @@ describe("cron exact-command guard", () => {
       ).resolves.toBeUndefined();
     });
   });
+
+  it("accepts a transparent Codex bash transport wrapper around a simple exact command", async () => {
+    await withTempDir("openclaw-exact-command-guard-", async (tmp) => {
+      const transcriptPath = path.join(tmp, "session.jsonl");
+      await fs.writeFile(
+        transcriptPath,
+        JSON.stringify({
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                name: "bash",
+                arguments: {
+                  command:
+                    "/bin/bash -lc 'python3 /home/node/.openclaw/workspace-jaynus/scripts/decision-log-enforcer.py'",
+                },
+              },
+            ],
+          },
+        }) + "\n",
+        "utf-8",
+      );
+
+      await expect(
+        __testing.validateExactCommandDiscipline({
+          expectedCommand:
+            "python3 /home/node/.openclaw/workspace-jaynus/scripts/decision-log-enforcer.py",
+          transcriptPath,
+        }),
+      ).resolves.toBeUndefined();
+    });
+  });
+
+  it("does not unwrap shell transports for chained expected commands", async () => {
+    await withTempDir("openclaw-exact-command-guard-", async (tmp) => {
+      const transcriptPath = path.join(tmp, "session.jsonl");
+      await fs.writeFile(
+        transcriptPath,
+        JSON.stringify({
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                name: "bash",
+                arguments: {
+                  command: "/bin/bash -lc 'python3 sync.py && python3 alert.py'",
+                },
+              },
+            ],
+          },
+        }) + "\n",
+        "utf-8",
+      );
+
+      await expect(
+        __testing.validateExactCommandDiscipline({
+          expectedCommand: "python3 sync.py && python3 alert.py",
+          transcriptPath,
+        }),
+      ).resolves.toMatch(/command mismatch/);
+    });
+  });
 });
