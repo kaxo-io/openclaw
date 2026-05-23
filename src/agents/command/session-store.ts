@@ -36,6 +36,17 @@ function resolvePositiveInteger(value: number | undefined): number | undefined {
   return Math.floor(value);
 }
 
+function resolveRunActivityTimestamp(params: {
+  entry: SessionEntry;
+  touchInteraction: boolean;
+  now: number;
+}): number | undefined {
+  if (params.touchInteraction) {
+    return params.now;
+  }
+  return params.entry.lastInteractionAt ?? params.entry.sessionStartedAt;
+}
+
 function removeLifecycleStateFromMetadataPatch(entry: SessionEntry): SessionEntry {
   const next = { ...entry };
   delete next.status;
@@ -119,7 +130,7 @@ export async function updateSessionStoreAfterAgentRun(params: {
     sessionId,
     updatedAt: now,
     sessionStartedAt: entry.sessionId === sessionId ? (entry.sessionStartedAt ?? now) : now,
-    lastInteractionAt: touchInteraction ? now : entry.lastInteractionAt,
+    lastInteractionAt: resolveRunActivityTimestamp({ entry, touchInteraction, now }),
     ...(preserveRuntimeModel
       ? {}
       : {

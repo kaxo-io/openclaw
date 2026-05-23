@@ -226,6 +226,87 @@ describe("updateSessionStoreAfterAgentRun", () => {
     });
   });
 
+  it("backfills background-run activity from session start without refreshing idle activity", async () => {
+    await withTempSessionStore(async ({ storePath }) => {
+      const cfg = {} as OpenClawConfig;
+      const sessionKey = "agent:main:main";
+      const sessionId = "background-session";
+      const sessionStartedAt = 1_234;
+      const sessionStore: Record<string, SessionEntry> = {
+        [sessionKey]: {
+          sessionId,
+          updatedAt: 1,
+          sessionStartedAt,
+        },
+      };
+      await fs.writeFile(storePath, JSON.stringify(sessionStore, null, 2));
+
+      await updateSessionStoreAfterAgentRun({
+        cfg,
+        sessionId,
+        sessionKey,
+        storePath,
+        sessionStore,
+        defaultProvider: "openai",
+        defaultModel: "gpt-5.4",
+        result: {
+          payloads: [],
+          meta: {
+            agentMeta: {
+              provider: "openai",
+              model: "gpt-5.4",
+            },
+          },
+        } as never,
+        touchInteraction: false,
+      });
+
+      expect(sessionStore[sessionKey]?.lastInteractionAt).toBe(sessionStartedAt);
+      expect(loadSessionStore(storePath)[sessionKey]?.lastInteractionAt).toBe(sessionStartedAt);
+    });
+  });
+
+  it("preserves existing activity timestamps for background runs", async () => {
+    await withTempSessionStore(async ({ storePath }) => {
+      const cfg = {} as OpenClawConfig;
+      const sessionKey = "agent:main:main";
+      const sessionId = "background-session";
+      const lastInteractionAt = 900;
+      const sessionStore: Record<string, SessionEntry> = {
+        [sessionKey]: {
+          sessionId,
+          updatedAt: 1,
+          sessionStartedAt: 100,
+          lastInteractionAt,
+        },
+      };
+      await fs.writeFile(storePath, JSON.stringify(sessionStore, null, 2));
+
+      await updateSessionStoreAfterAgentRun({
+        cfg,
+        sessionId,
+        sessionKey,
+        storePath,
+        sessionStore,
+        defaultProvider: "openai",
+        defaultModel: "gpt-5.4",
+        result: {
+          payloads: [],
+          meta: {
+            agentMeta: {
+              provider: "openai",
+              model: "gpt-5.4",
+            },
+          },
+        } as never,
+        touchInteraction: false,
+      });
+
+      expect(sessionStore[sessionKey]?.lastInteractionAt).toBe(lastInteractionAt);
+      expect(loadSessionStore(storePath)[sessionKey]?.lastInteractionAt).toBe(lastInteractionAt);
+    });
+  });
+
   it("clears the embedded harness pin after a CLI run", async () => {
     await withTempSessionStore(async ({ storePath }) => {
       const cfg = {
