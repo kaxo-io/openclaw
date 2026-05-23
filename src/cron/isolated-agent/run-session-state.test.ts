@@ -7,6 +7,7 @@ import type { SessionEntry } from "../../config/sessions.js";
 import {
   adoptCronRunSessionMetadata,
   createPersistCronSessionEntry,
+  markCronSessionInitialized,
   type MutableCronSession,
 } from "./run-session-state.js";
 
@@ -212,6 +213,49 @@ describe("createPersistCronSessionEntry", () => {
       updatedAt: 1000,
       systemSent: true,
     });
+  });
+});
+
+describe("markCronSessionInitialized", () => {
+  it("clears initializing before cron runner entry and persists the update", async () => {
+    const transcriptPath = await createTranscriptFile();
+    const cronSession = makeCronSession(
+      makeSessionEntry({
+        sessionFile: transcriptPath,
+        initializing: true,
+      }),
+    );
+    const persistSessionEntry = vi.fn(async () => {
+      cronSession.store["agent:main:cron:job"] = cronSession.sessionEntry;
+    });
+
+    await expect(
+      markCronSessionInitialized({
+        cronSession,
+        nowMs: 2000,
+        persistSessionEntry,
+      }),
+    ).resolves.toBe(true);
+
+    expect(cronSession.sessionEntry.initializing).toBeUndefined();
+    expect(cronSession.sessionEntry.updatedAt).toBe(2000);
+    expect(cronSession.store["agent:main:cron:job"]?.initializing).toBeUndefined();
+    expect(persistSessionEntry).toHaveBeenCalledOnce();
+  });
+
+  it("does not persist when the cron session is already initialized", async () => {
+    const cronSession = makeCronSession(makeSessionEntry({ initializing: undefined }));
+    const persistSessionEntry = vi.fn();
+
+    await expect(
+      markCronSessionInitialized({
+        cronSession,
+        nowMs: 2000,
+        persistSessionEntry,
+      }),
+    ).resolves.toBe(false);
+
+    expect(persistSessionEntry).not.toHaveBeenCalled();
   });
 });
 

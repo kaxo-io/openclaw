@@ -134,6 +134,23 @@ export function markCronSessionPreRun(params: {
   params.entry.systemSent = true;
 }
 
+export async function markCronSessionInitialized(params: {
+  cronSession: MutableCronSession;
+  nowMs: number;
+  persistSessionEntry: PersistCronSessionEntry;
+}): Promise<boolean> {
+  if (!params.cronSession.sessionEntry.initializing) {
+    return false;
+  }
+  params.cronSession.sessionEntry = {
+    ...params.cronSession.sessionEntry,
+    initializing: undefined,
+    updatedAt: params.nowMs,
+  };
+  await params.persistSessionEntry();
+  return true;
+}
+
 export function syncCronSessionLiveSelection(params: {
   entry: MutableCronSessionEntry;
   liveSelection: CronLiveSelection;

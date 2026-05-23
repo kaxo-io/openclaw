@@ -106,6 +106,7 @@ describe("resolveCronSession", () => {
     expect(result.sessionEntry.providerOverride).toBeUndefined();
     expect(result.sessionEntry.model).toBeUndefined();
     expect(result.isNewSession).toBe(true);
+    expect(result.sessionEntry.initializing).toBe(true);
   });
 
   // New tests for session reuse behavior (#18027)
@@ -124,6 +125,7 @@ describe("resolveCronSession", () => {
 
       expect(result.sessionEntry.sessionId).toBe("existing-session-id-123");
       expect(result.sessionEntry.lastInteractionAt).toBe(lastInteractionAt);
+      expect(result.sessionEntry.initializing).toBeUndefined();
       expect(result.isNewSession).toBe(false);
       expect(result.previousSessionId).toBeUndefined();
       expect(result.systemSent).toBe(true);
@@ -145,6 +147,7 @@ describe("resolveCronSession", () => {
 
       expect(result.sessionEntry.sessionId).not.toBe("old-session-id");
       expect(result.isNewSession).toBe(true);
+      expect(result.sessionEntry.initializing).toBe(true);
       expect(result.previousSessionId).toBe("old-session-id");
       expect(result.systemSent).toBe(false);
       expect(result.sessionEntry.modelOverride).toBe("gpt-4.1-mini");
@@ -168,6 +171,7 @@ describe("resolveCronSession", () => {
 
       expect(result.sessionEntry.sessionId).not.toBe("existing-session-id-456");
       expect(result.isNewSession).toBe(true);
+      expect(result.sessionEntry.initializing).toBe(true);
       expect(result.previousSessionId).toBe("existing-session-id-456");
       expect(result.systemSent).toBe(false);
       expect(result.sessionEntry.modelOverride).toBe("sonnet-4");
@@ -479,6 +483,21 @@ describe("resolveCronSession", () => {
         to: "channel:C0XXXXXXXXX",
         threadId: "1737500000.123456",
       });
+    });
+
+    it("preserves initializing=true when reusing an already-initializing session", () => {
+      const result = resolveWithStoredEntry({
+        entry: {
+          sessionId: "existing-session-id-102",
+          updatedAt: NOW_MS - 1000,
+          systemSent: true,
+          initializing: true,
+        },
+        fresh: true,
+      });
+
+      expect(result.isNewSession).toBe(false);
+      expect(result.sessionEntry.initializing).toBe(true);
     });
 
     it("creates new sessionId when entry exists but has no sessionId", () => {

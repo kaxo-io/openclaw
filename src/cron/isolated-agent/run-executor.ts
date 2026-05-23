@@ -33,7 +33,7 @@ import type {
   MutableCronSession,
   PersistCronSessionEntry,
 } from "./run-session-state.js";
-import { syncCronSessionLiveSelection } from "./run-session-state.js";
+import { markCronSessionInitialized, syncCronSessionLiveSelection } from "./run-session-state.js";
 import { isLikelyInterimCronMessage } from "./subagent-followup-hints.js";
 
 type AgentTurnPayload = Extract<CronJob["payload"], { kind: "agentTurn" }> | null;
@@ -124,6 +124,7 @@ export function createCronPromptExecutor(params: {
   useSubagentFallbacks: boolean;
   liveSelection: CronLiveSelection;
   cronSession: MutableCronSession;
+  persistSessionEntry: PersistCronSessionEntry;
   abortSignal?: AbortSignal;
   abortReason: () => string;
   onExecutionStarted?: () => void;
@@ -155,6 +156,24 @@ export function createCronPromptExecutor(params: {
   const bootstrapContextMode = resolveCronBootstrapContextMode(params.agentPayload);
   const sourceReplyDeliveryMode = params.sourceDelivery.sourceReplyDeliveryMode;
   const messageChannel = params.sourceDelivery.target.channel ?? params.resolvedDelivery.channel;
+  let didMarkSessionInitialized = false;
+  const markSessionInitializedBeforeRunner = async () => {
+    if (didMarkSessionInitialized) {
+      return;
+    }
+    didMarkSessionInitialized = true;
+    try {
+      await markCronSessionInitialized({
+        cronSession: params.cronSession,
+        nowMs: Date.now(),
+        persistSessionEntry: params.persistSessionEntry,
+      });
+    } catch (err) {
+      logWarn(
+        `[cron:${params.job.id}] Failed to clear initializing flag before runner entry: ${String(err)}`,
+      );
+    }
+  };
 
   const runPrompt = async (promptText: string) => {
     const fallbackResult = await runWithModelFallback({
@@ -196,6 +215,7 @@ export function createCronPromptExecutor(params: {
           const cliSessionId = params.cronSession.isNewSession
             ? undefined
             : await getCliSessionId(params.cronSession.sessionEntry, executionProvider);
+          await markSessionInitializedBeforeRunner();
           const result = await runCliAgent({
             sessionId: params.cronSession.sessionEntry.sessionId,
             sessionKey: params.runSessionKey,
@@ -236,6 +256,7 @@ export function createCronPromptExecutor(params: {
           to: params.resolvedDelivery.to,
           threadId: params.resolvedDelivery.threadId,
         });
+        await markSessionInitializedBeforeRunner();
         const result = await runEmbeddedPiAgent({
           sessionId: params.cronSession.sessionEntry.sessionId,
           sessionKey: params.runSessionKey,
@@ -396,6 +417,7 @@ export async function executeCronRun(params: {
     useSubagentFallbacks: params.useSubagentFallbacks,
     liveSelection: params.liveSelection,
     cronSession: params.cronSession,
+    persistSessionEntry: params.persistSessionEntry,
     abortSignal: params.abortSignal,
     abortReason: params.abortReason,
     onExecutionStarted: params.onExecutionStarted,

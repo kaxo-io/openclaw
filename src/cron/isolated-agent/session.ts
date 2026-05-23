@@ -176,6 +176,7 @@ export function resolveCronSession(params: {
     ...baseEntry,
     // Always update these core fields
     sessionId,
+    initializing: isNewSession ? true : baseEntry?.initializing,
     updatedAt: params.nowMs,
     sessionStartedAt: isNewSession
       ? params.nowMs
