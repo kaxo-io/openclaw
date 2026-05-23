@@ -194,6 +194,8 @@ export type SessionEntry = {
   /** Durable one-shot prompt additions drained before the next agent turn. */
   pluginNextTurnInjections?: Record<string, SessionPluginNextTurnInjection[]>;
   sessionId: string;
+  /** True until the first agent turn actually starts running for this session id. */
+  initializing?: boolean;
   updatedAt: number;
   sessionFile?: string;
   /** Parent session key that spawned this session (used for sandbox session-tool scoping). */

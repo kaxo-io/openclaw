@@ -2107,6 +2107,7 @@ function filterSessionEntries(params: {
       }
       return true;
     })
+    .filter(([, entry]) => entry?.initializing !== true)
     .filter(([key, entry]) => {
       if (!spawnedBy) {
         return true;

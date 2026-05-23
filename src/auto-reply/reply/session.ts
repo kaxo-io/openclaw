@@ -631,6 +631,7 @@ export async function initSessionState(params: {
   sessionEntry = {
     ...baseEntry,
     sessionId,
+    initializing: isNewSession ? true : baseEntry?.initializing,
     updatedAt: Date.now(),
     sessionStartedAt: isNewSession
       ? now

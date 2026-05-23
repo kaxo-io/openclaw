@@ -165,6 +165,32 @@ describe("gateway session utils", () => {
     expect(listed.hasMore).toBe(true);
   });
 
+  test("session lists skip entries still initializing", () => {
+    const cfg = createModelDefaultsConfig({ primary: "openai/gpt-5.4" });
+    const store = {
+      visible: {
+        sessionId: "visible-session",
+        updatedAt: 2_000,
+      } satisfies SessionEntry,
+      hidden: {
+        sessionId: "hidden-session",
+        updatedAt: 3_000,
+        initializing: true,
+      } satisfies SessionEntry,
+    } satisfies Record<string, SessionEntry>;
+
+    const listed = listSessionsFromStore({
+      cfg,
+      storePath: "",
+      store,
+      opts: {},
+    });
+
+    expect(listed.sessions.map((session) => session.key)).toEqual(["visible"]);
+    expect(listed.count).toBe(1);
+    expect(listed.totalCount).toBe(1);
+  });
+
   test("parseGroupKey handles group keys", () => {
     expect(parseGroupKey("discord:group:dev")).toEqual({
       channel: "discord",

@@ -1175,6 +1175,7 @@ export const agentHandlers: GatewayRequestHandlers = {
         });
         const nextEntryPatch: SessionEntry = {
           sessionId,
+          initializing: isNewSession ? true : entry?.initializing,
           updatedAt: now,
           sessionStartedAt: isNewSession
             ? now

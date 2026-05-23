@@ -1138,6 +1138,33 @@ export async function runReplyAgent(params: {
 
   const pendingToolTasks = new Set<Promise<void>>();
   const blockReplyTimeoutMs = opts?.blockReplyTimeoutMs ?? BLOCK_REPLY_SEND_TIMEOUT_MS;
+  const markSessionInitialized = async () => {
+    if (!activeSessionStore || !sessionKey) {
+      return;
+    }
+    const entry = activeSessionEntry ?? activeSessionStore[sessionKey];
+    if (!entry?.initializing) {
+      return;
+    }
+    const updatedAt = Date.now();
+    const nextEntry: SessionEntry = {
+      ...entry,
+      initializing: undefined,
+      updatedAt,
+    };
+    activeSessionEntry = nextEntry;
+    activeSessionStore[sessionKey] = nextEntry;
+    if (storePath) {
+      await updateSessionStoreEntry({
+        storePath,
+        sessionKey,
+        update: async () => ({
+          initializing: undefined,
+          updatedAt,
+        }),
+      });
+    }
+  };
   const touchActiveSessionEntry = async () => {
     if (!activeSessionEntry || !activeSessionStore || !sessionKey) {
       return;
@@ -1153,6 +1180,8 @@ export async function runReplyAgent(params: {
       });
     }
   };
+
+  await markSessionInitialized();
 
   if (effectiveShouldSteer && isStreaming) {
     const steerSessionId =
