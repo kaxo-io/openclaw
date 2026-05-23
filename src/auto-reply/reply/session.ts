@@ -636,7 +636,9 @@ export async function initSessionState(params: {
     sessionStartedAt: isNewSession
       ? now
       : (baseEntry?.sessionStartedAt ?? lifecycleTimestamps.sessionStartedAt),
-    lastInteractionAt: isSystemEvent ? baseEntry?.lastInteractionAt : now,
+    lastInteractionAt: isSystemEvent
+      ? (baseEntry?.lastInteractionAt ?? baseEntry?.sessionStartedAt ?? now)
+      : now,
     systemSent,
     abortedLastRun,
     // Persist previously stored thinking/verbose levels when present.

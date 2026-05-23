@@ -3638,6 +3638,41 @@ describe("initSessionState internal channel routing preservation", () => {
     expect(result.sessionEntry.origin).toBeUndefined();
   });
 
+  it("backfills system-event activity from sessionStartedAt when lastInteractionAt is absent", async () => {
+    const storePath = await createStorePath("system-event-activity-backfill-");
+    const sessionKey = "agent:jaynus:main";
+    const sessionStartedAt = Date.now() - 30 * 60 * 1000;
+    await writeSessionStoreFast(storePath, {
+      [sessionKey]: {
+        sessionId: "sess-system-event-without-last-interaction",
+        updatedAt: sessionStartedAt,
+        sessionStartedAt,
+        systemSent: true,
+      },
+    });
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+
+    const result = await initSessionState({
+      ctx: {
+        Body: "system checkpoint",
+        SessionKey: sessionKey,
+        Provider: "heartbeat",
+        From: "heartbeat",
+        To: "heartbeat",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.sessionEntry.lastInteractionAt).toBe(sessionStartedAt);
+
+    const persisted = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
+      string,
+      SessionEntry
+    >;
+    expect(persisted[sessionKey]?.lastInteractionAt).toBe(sessionStartedAt);
+  });
+
   it("preserves the existing user route when a heartbeat targets a different chat on the shared session", async () => {
     const storePath = await createStorePath("system-event-preserve-user-route-");
     const sessionKey = "agent:main:main";
