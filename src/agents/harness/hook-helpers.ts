@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { recordReplyToolInventoryEvidence } from "../../infra/outbound/reply-tool-inventory-guard.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { consumeAdjustedParamsForToolCall } from "../pi-tools.before-tool-call.js";
@@ -18,6 +19,11 @@ export async function runAgentHarnessAfterToolCallHook(params: {
   error?: string;
   startedAt?: number;
 }): Promise<void> {
+  recordReplyToolInventoryEvidence({
+    toolName: params.toolName,
+    runId: params.runId,
+    sessionKey: params.sessionKey,
+  });
   const hookRunner = getGlobalHookRunner();
   if (!hookRunner?.hasHooks("after_tool_call")) {
     return;

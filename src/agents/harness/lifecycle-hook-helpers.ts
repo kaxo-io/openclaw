@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { evaluateReplyToolInventoryGuard } from "../../infra/outbound/reply-tool-inventory-guard.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import type {
@@ -112,6 +113,16 @@ export async function runAgentHarnessBeforeAgentFinalizeHook(params: {
   ctx: AgentHarnessHookContext;
   hookRunner?: AgentHarnessHookRunner;
 }): Promise<AgentHarnessBeforeAgentFinalizeOutcome> {
+  const toolInventoryDecision = evaluateReplyToolInventoryGuard({
+    channelId: params.ctx.messageProvider ?? params.ctx.channelId,
+    content: params.event.lastAssistantMessage,
+    runId: params.event.runId ?? params.ctx.runId,
+    sessionKey: params.event.sessionKey ?? params.ctx.sessionKey,
+  });
+  if (!toolInventoryDecision.ok) {
+    return { action: "revise", reason: toolInventoryDecision.reason };
+  }
+
   const hookRunner = params.hookRunner ?? getGlobalHookRunner();
   if (
     !hookRunner?.hasHooks("before_agent_finalize") ||

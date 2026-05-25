@@ -79,6 +79,7 @@ import {
   type OutboundPayloadPlan,
 } from "./payloads.js";
 import { createReplyToDeliveryPolicy } from "./reply-policy.js";
+import { evaluateReplyToolInventoryGuard } from "./reply-tool-inventory-guard.js";
 import { stripInternalRuntimeScaffolding } from "./sanitize-text.js";
 import { type OutboundSendDeps } from "./send-deps.js";
 import type { OutboundSessionContext } from "./session-context.js";
@@ -1045,6 +1046,7 @@ async function applyMessageSendingHook(params: {
   accountId?: string;
   replyToId?: string | null;
   threadId?: string | number | null;
+  sessionKey?: string;
 }): Promise<{
   cancelled: boolean;
   cancelReason?: string;
@@ -1053,6 +1055,22 @@ async function applyMessageSendingHook(params: {
   payload: ReplyPayload;
   payloadSummary: NormalizedOutboundPayload;
 }> {
+  const hookContent = params.payloadSummary.hookContent ?? params.payloadSummary.text;
+  const guardDecision = evaluateReplyToolInventoryGuard({
+    channelId: params.channel,
+    content: hookContent,
+    sessionKey: params.sessionKey,
+  });
+  if (!guardDecision.ok) {
+    return {
+      cancelled: true,
+      cancelReason: guardDecision.reason,
+      hookMetadata: { guard: "tool_inventory" },
+      contentRewritten: false,
+      payload: params.payload,
+      payloadSummary: params.payloadSummary,
+    };
+  }
   if (!params.enabled) {
     return {
       cancelled: false,
@@ -1065,7 +1083,7 @@ async function applyMessageSendingHook(params: {
     const sendingResult = await params.hookRunner!.runMessageSending(
       {
         to: params.to,
-        content: params.payloadSummary.hookContent ?? params.payloadSummary.text,
+        content: hookContent,
         replyToId: params.replyToId ?? undefined,
         threadId: params.threadId ?? undefined,
         metadata: {
@@ -1078,6 +1096,7 @@ async function applyMessageSendingHook(params: {
         channelId: params.channel,
         accountId: params.accountId ?? undefined,
         conversationId: params.to,
+        sessionKey: params.sessionKey,
       },
     );
     if (sendingResult?.cancel) {
@@ -1518,6 +1537,7 @@ async function deliverOutboundPayloadsCore(
         accountId,
         replyToId: resolveCurrentReplyTo(payload).replyToId,
         threadId: params.threadId,
+        sessionKey: sessionKeyForInternalHooks ?? params.session?.key ?? params.session?.policyKey,
       });
       if (hookResult.cancelled) {
         const hookEffect =

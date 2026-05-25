@@ -8,6 +8,7 @@ import {
   measureDiagnosticsTimelineSpan,
   measureDiagnosticsTimelineSpanSync,
 } from "../infra/diagnostics-timeline.js";
+import { evaluateReplyToolInventoryGuard } from "../infra/outbound/reply-tool-inventory-guard.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import type { SilentReplyConversationType } from "../shared/silent-reply-policy.js";
 import {
@@ -155,24 +156,43 @@ function resolveInboundReplyHookTarget(
 
 function buildMessageSendingBeforeDeliver(
   ctx: MsgContext | FinalizedMsgContext,
+  opts?: { runId?: string },
 ): ReplyDispatchBeforeDeliver | undefined {
   const hookRunner = getGlobalHookRunner();
-  if (!hookRunner?.hasHooks("message_sending")) {
-    return undefined;
-  }
-
   const finalized = finalizeInboundContext(ctx);
   const hookCtx = deriveInboundMessageHookContext(finalized);
   const replyTarget = resolveInboundReplyHookTarget(finalized, hookCtx);
+  const hasMessageSendingHook = hookRunner?.hasHooks("message_sending") ?? false;
+  if (!hasMessageSendingHook && hookCtx.channelId !== "telegram") {
+    return undefined;
+  }
+  const pluginCtx = {
+    ...toPluginMessageContext(hookCtx),
+    ...(opts?.runId ? { runId: opts.runId } : {}),
+  };
 
   return async (payload: ReplyPayload): Promise<ReplyPayload | null> => {
     if (!payload.text) {
       return payload;
     }
 
+    const guardDecision = evaluateReplyToolInventoryGuard({
+      channelId: hookCtx.channelId,
+      content: payload.text,
+      runId: opts?.runId,
+      sessionKey: hookCtx.sessionKey,
+    });
+    if (!guardDecision.ok) {
+      return null;
+    }
+
+    if (!hasMessageSendingHook || !hookRunner) {
+      return payload;
+    }
+
     const result = await hookRunner.runMessageSending(
       { content: payload.text, to: replyTarget },
-      toPluginMessageContext(hookCtx),
+      pluginCtx,
     );
 
     if (result?.cancel) {
@@ -291,7 +311,8 @@ export async function dispatchInboundMessageWithBufferedDispatcher(params: {
   const foregroundReplyFence = beginForegroundReplyFence(finalized);
   const silentReplyContext = resolveDispatcherSilentReplyContext(finalized, params.cfg);
   const configuredBeforeDeliver =
-    params.dispatcherOptions.beforeDeliver ?? buildMessageSendingBeforeDeliver(finalized);
+    params.dispatcherOptions.beforeDeliver ??
+    buildMessageSendingBeforeDeliver(finalized, { runId: params.replyOptions?.runId });
   const beforeDeliver: ReplyDispatchBeforeDeliver | undefined =
     foregroundReplyFence || configuredBeforeDeliver
       ? async (payload, info) => {
@@ -344,7 +365,8 @@ export async function dispatchInboundMessageWithDispatcher(params: {
   const dispatcher = createReplyDispatcher({
     ...params.dispatcherOptions,
     beforeDeliver:
-      params.dispatcherOptions.beforeDeliver ?? buildMessageSendingBeforeDeliver(params.ctx),
+      params.dispatcherOptions.beforeDeliver ??
+      buildMessageSendingBeforeDeliver(params.ctx, { runId: params.replyOptions?.runId }),
     silentReplyContext: params.dispatcherOptions.silentReplyContext ?? silentReplyContext,
   });
   return await dispatchInboundMessage({

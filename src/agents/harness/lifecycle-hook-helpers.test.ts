@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  clearReplyToolInventoryEvidenceForTest,
+  recordReplyToolInventoryEvidence,
+} from "../../infra/outbound/reply-tool-inventory-guard.js";
+import {
   clearAgentHarnessFinalizeRetryBudget,
   runAgentHarnessAgentEndHook,
   runAgentHarnessBeforeAgentFinalizeHook,
@@ -27,6 +31,7 @@ const EVENT = {
 describe("agent harness lifecycle hook helpers", () => {
   afterEach(() => {
     clearAgentHarnessFinalizeRetryBudget();
+    clearReplyToolInventoryEvidenceForTest();
   });
 
   it("ignores legacy hook runners that advertise llm_input without a runner method", () => {
@@ -66,6 +71,42 @@ describe("agent harness lifecycle hook helpers", () => {
         event: {},
         hookRunner: createLegacyHookRunner(),
       } as never),
+    ).resolves.toEqual({ action: "continue" });
+  });
+
+  it("asks for a revision when a Telegram final reply requests data without tool evidence", async () => {
+    await expect(
+      runAgentHarnessBeforeAgentFinalizeHook({
+        ctx: { messageProvider: "telegram", runId: "run-1", sessionKey: "agent:main:tg:1" },
+        event: {
+          ...EVENT,
+          lastAssistantMessage: "Can you paste the Search Console export?",
+        },
+        hookRunner: { hasHooks: vi.fn(() => false) } as never,
+      }),
+    ).resolves.toEqual({
+      action: "revise",
+      reason:
+        "tool-inventory guard: Telegram reply asks the user for paste/access/check data before any same-turn tool query; inspect available tools first.",
+    });
+  });
+
+  it("allows Telegram final replies after same-run tool evidence", async () => {
+    recordReplyToolInventoryEvidence({
+      toolName: "functions.exec_command",
+      runId: "run-1",
+      sessionKey: "agent:main:tg:1",
+    });
+
+    await expect(
+      runAgentHarnessBeforeAgentFinalizeHook({
+        ctx: { messageProvider: "telegram", runId: "run-1", sessionKey: "agent:main:tg:1" },
+        event: {
+          ...EVENT,
+          lastAssistantMessage: "Can you paste the Search Console export?",
+        },
+        hookRunner: { hasHooks: vi.fn(() => false) } as never,
+      }),
     ).resolves.toEqual({ action: "continue" });
   });
 
